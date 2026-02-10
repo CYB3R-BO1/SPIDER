@@ -5,9 +5,24 @@ Purpose:
 - Maintain safe, deterministic multi-agent behavior.
 """
 
-class Capability:
-    READ_GRAPH = "read_graph"
-    WRITE_GRAPH = "write_graph"
-    EXECUTE_BINARY = "execute_binary"
-    GENERATE_SEMANTICS = "generate_semantics"
-    VERIFY_FACTS = "verify_facts"
+from enum import Enum, auto
+
+
+class Capability(Enum):
+    STATIC_READ = auto()
+    STATIC_WRITE = auto()
+    DYNAMIC_EXECUTE = auto()
+    SEMANTIC_REASON = auto()
+    VERIFY = auto()
+    SNAPSHOT = auto()
+    PLUGIN_ANALYSIS = auto()
+
+
+def enforce_capability(agent, capability: Capability) -> bool:
+    caps = getattr(agent.__class__, "CAPABILITIES", set())
+    if capability not in caps:
+        print(
+            f"[Capability] Violation: {agent.__class__.__name__} lacks {capability.name}"
+        )
+        return False
+    return True

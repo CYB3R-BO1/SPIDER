@@ -1,6 +1,7 @@
-import redis
 import json
+import os
 import threading
+import redis
 
 
 class EventBus:
@@ -10,7 +11,11 @@ class EventBus:
     Subscribers listen in background threads.
     """
 
-    def __init__(self, host="localhost", port=6379):
+    def __init__(self, host=None, port=None):
+        if host is None:
+            host = os.getenv("REDIS_HOST", "localhost")
+        if port is None:
+            port = int(os.getenv("REDIS_PORT", "6379"))
         self.client = redis.Redis(host=host, port=port, decode_responses=True)
         self.pubsub = self.client.pubsub()
 

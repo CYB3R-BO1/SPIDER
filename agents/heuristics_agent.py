@@ -1,6 +1,7 @@
 import re
 from typing import Dict, List, Optional, Set, Tuple
 
+from core.capabilities import Capability
 from storage.graph_store import GraphStore
 from bus.event_bus import EventBus
 
@@ -15,6 +16,7 @@ class HeuristicsAgent:
     - Enhance CFG fidelity without AI involvement.
     - Update graph DB with heuristic-derived facts.
     """
+    CAPABILITIES = {Capability.STATIC_READ}
 
     def __init__(self, graph_store: GraphStore, bus: Optional[EventBus] = None):
         self.g = graph_store
@@ -70,6 +72,10 @@ class HeuristicsAgent:
         props.update(self._detect_pointer_arithmetic(block_insns))
         props.update(self._detect_stack_frame(block_insns.get(entry, [])))
         props.update(self._classify_function(block_insns))
+
+        switch_hits = self._detect_switch_tables(blocks, block_insns)
+        for header_bb, cases in switch_hits:
+            self.g.set_switch_info(func_addr, header_bb, cases)
 
         if props:
             self.g.set_function_properties(func_addr, props)
@@ -312,3 +318,56 @@ class HeuristicsAgent:
             return int(v, 10)
         except Exception:
             return None
+
+    def _detect_switch_tables(
+        self, blocks: List[int], block_insns: Dict[int, List[Dict]]
+    ) -> List[Tuple[int, List[int]]]:
+        hits: List[Tuple[int, List[int]]] = []
+        for bb in blocks:
+            insns = block_insns.get(bb, [])
+            if not insns:
+                continue
+            last = insns[-1]
+            mnem = (last.get("mnemonic") or "").lower()
+            if mnem not in {"jmp", "br", "bx"}:
+                continue
+            ops = last.get("operands") or []
+            if not ops:
+                continue
+            if not self._looks_like_indirect_table(ops[0]):
+                continue
+
+            cases = self._extract_table_constants(insns)
+            if len(cases) < 3:
+                continue
+            if not self._is_contiguous_cases(cases):
+                continue
+
+            hits.append((bb, cases))
+        return hits
+
+    def _looks_like_indirect_table(self, op: str) -> bool:
+        if not isinstance(op, str):
+            return False
+        return bool(re.search(r"\[.*\+.*\*.*\]", op))
+
+    def _extract_table_constants(self, insns: List[Dict]) -> List[int]:
+        cases = []
+        for insn in insns:
+            ops = insn.get("operands") or []
+            for op in ops:
+                imm = self._parse_imm(op) if isinstance(op, str) else None
+                if imm is not None:
+                    cases.append(imm)
+        return cases
+
+    def _is_contiguous_cases(self, cases: List[int]) -> bool:
+        if len(cases) < 3:
+            return False
+        cases_sorted = sorted(set(cases))
+        if len(cases_sorted) < 3:
+            return False
+        for i in range(1, len(cases_sorted)):
+            if cases_sorted[i] != cases_sorted[i - 1] + 1:
+                return False
+        return True

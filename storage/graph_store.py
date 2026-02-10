@@ -1,3 +1,4 @@
+import json
 from neo4j import GraphDatabase
 from typing import List, Dict
 
@@ -97,8 +98,9 @@ class GraphStore:
         ORDER BY f.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query))
-            return [dict(r) for r in result]
+            return session.execute_read(
+                lambda tx: [dict(r) for r in tx.run(query)]
+            )
 
     def fetch_basic_blocks(self, func_addr: int):
         query = """
@@ -107,8 +109,9 @@ class GraphStore:
         ORDER BY b.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query, func_addr=func_addr))
-            return [r["addr"] for r in result]
+            return session.execute_read(
+                lambda tx: [r["addr"] for r in tx.run(query, func_addr=func_addr)]
+            )
 
     def fetch_all_basic_blocks(self):
         query = """
@@ -117,8 +120,9 @@ class GraphStore:
         ORDER BY b.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query))
-            return [r["addr"] for r in result]
+            return session.execute_read(
+                lambda tx: [r["addr"] for r in tx.run(query)]
+            )
 
     def fetch_flow_edges(self, func_addr: int):
         query = """
@@ -127,8 +131,9 @@ class GraphStore:
         ORDER BY a.addr, b.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query, func_addr=func_addr))
-            return [(r["src"], r["dst"]) for r in result]
+            return session.execute_read(
+                lambda tx: [(r["src"], r["dst"]) for r in tx.run(query, func_addr=func_addr)]
+            )
 
     def fetch_all_flow_edges(self):
         query = """
@@ -137,8 +142,9 @@ class GraphStore:
         ORDER BY a.addr, b.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query))
-            return [(r["src"], r["dst"]) for r in result]
+            return session.execute_read(
+                lambda tx: [(r["src"], r["dst"]) for r in tx.run(query)]
+            )
 
     def fetch_flow_edges_from(self, src_bb: int):
         query = """
@@ -147,8 +153,9 @@ class GraphStore:
         ORDER BY b.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query, src=src_bb))
-            return [(r["src"], r["dst"]) for r in result]
+            return session.execute_read(
+                lambda tx: [(r["src"], r["dst"]) for r in tx.run(query, src=src_bb)]
+            )
 
     def fetch_block_instructions(self, bb_addr: int):
         query = """
@@ -157,8 +164,9 @@ class GraphStore:
         ORDER BY i.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query, bb_addr=bb_addr))
-            return [dict(r) for r in result]
+            return session.execute_read(
+                lambda tx: [dict(r) for r in tx.run(query, bb_addr=bb_addr)]
+            )
 
     def mark_loop_header(
         self,
@@ -201,6 +209,32 @@ class GraphStore:
                 lambda tx: tx.run(query, func_addr=func_addr, props=props)
             )
 
+    def set_plugin_facts(self, func_addr: int, facts: Dict):
+        query = """
+        MATCH (f:Function {addr:$func_addr})
+        SET f.plugin_facts = coalesce(f.plugin_facts, {}) + $facts
+        RETURN f
+        """
+        with self.driver.session() as session:
+            session.execute_write(
+                lambda tx: tx.run(query, func_addr=func_addr, facts=facts)
+            )
+
+    def set_switch_info(self, func_addr: int, header_bb: int, cases: List[int]):
+        query = """
+        MATCH (f:Function {addr:$func_addr})-[:CONTAINS]->(b:BasicBlock {addr:$bb_addr})
+        SET b:switch,
+            b.switch_header = true,
+            b.switch_cases = $cases
+        RETURN b
+        """
+        with self.driver.session() as session:
+            session.execute_write(
+                lambda tx: tx.run(
+                    query, func_addr=func_addr, bb_addr=header_bb, cases=cases
+                )
+            )
+
     def remove_flow_edge(self, src_bb: int, dst_bb: int):
         query = """
         MATCH (a:BasicBlock {addr:$src})-[r:FLOW]->(b:BasicBlock {addr:$dst})
@@ -219,6 +253,35 @@ class GraphStore:
             session.execute_write(
                 lambda tx: tx.run(query, run_id=run_id, binary_path=binary_path)
             )
+
+    def get_latest_run(self):
+        query = """
+        MATCH (r:Run)
+        RETURN r.id AS id, r.binary_path AS binary_path
+        ORDER BY r.id DESC
+        LIMIT 1
+        """
+        with self.driver.session() as session:
+            def _fn(tx):
+                r = tx.run(query)
+                row = r.single()
+                if row:
+                    return {"id": row.get("id"), "binary_path": row.get("binary_path")}
+                return None
+
+            return session.execute_read(_fn)
+
+    # ---------------------------
+    # Maintenance
+    # ---------------------------
+
+    def clear_graph(self):
+        query = """
+        MATCH (n)
+        DETACH DELETE n
+        """
+        with self.driver.session() as session:
+            session.execute_write(lambda tx: tx.run(query))
 
     def add_executes_edge(
         self,
@@ -287,6 +350,35 @@ class GraphStore:
                 )
             )
 
+    def add_syscall_event(
+        self,
+        run_id: str,
+        seq: int,
+        pc: int,
+        syscall_number: int,
+        args: List,
+    ):
+        query = """
+        MATCH (r:Run {id:$run_id})
+        CREATE (r)-[:SYSCALL_EVENT {
+            seq:$seq,
+            pc:$pc,
+            syscall_number:$syscall_number,
+            args:$args
+        }]->(s:Syscall {number:$syscall_number})
+        """
+        with self.driver.session() as session:
+            session.execute_write(
+                lambda tx: tx.run(
+                    query,
+                    run_id=run_id,
+                    seq=seq,
+                    pc=pc,
+                    syscall_number=syscall_number,
+                    args=args,
+                )
+            )
+
     def fetch_runtime_flow_edges(self):
         query = """
         MATCH (a:BasicBlock)-[r:RUNTIME_FLOW]->(b:BasicBlock)
@@ -294,8 +386,16 @@ class GraphStore:
         ORDER BY a.addr, b.addr
         """
         with self.driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query))
-            return [(r["src"], r["dst"]) for r in result]
+            return session.execute_read(lambda tx: [(r["src"], r["dst"]) for r in tx.run(query)])
+
+    def fetch_executed_blocks(self):
+        query = """
+        MATCH (r:Run)-[:EXECUTES]->(b:BasicBlock)
+        RETURN DISTINCT b.addr AS addr
+        ORDER BY b.addr
+        """
+        with self.driver.session() as session:
+            return session.execute_read(lambda tx: [r["addr"] for r in tx.run(query)])
 
     def mark_flow_edge_suspect(self, src_bb: int, dst_bb: int):
         query = """
@@ -305,3 +405,61 @@ class GraphStore:
         """
         with self.driver.session() as session:
             session.execute_write(lambda tx: tx.run(query, src=src_bb, dst=dst_bb))
+
+    def set_verification_results(self, results: Dict):
+        query = """
+        MERGE (v:VerificationSummary {id:"latest"})
+        SET v.data = $data
+        RETURN v
+        """
+        with self.driver.session() as session:
+            # Neo4j properties must be primitives or arrays; store complex
+            # verification blobs as JSON strings to avoid type errors.
+            session.execute_write(lambda tx: tx.run(query, data=json.dumps(results)))
+
+    def get_verification_results(self):
+        query = """
+        MATCH (v:VerificationSummary {id:"latest"})
+        RETURN v.data AS data
+        """
+        with self.driver.session() as session:
+            def _fn(tx):
+                r = tx.run(query)
+                row = r.single()
+                if row:
+                    data = row.get("data")
+                    try:
+                        return json.loads(data)
+                    except Exception:
+                        return data
+                return None
+
+            return session.execute_read(_fn)
+
+    def set_semantic_summaries(self, summaries: Dict):
+        query = """
+        MERGE (s:SemanticSummary {id:"latest"})
+        SET s.data = $data
+        RETURN s
+        """
+        with self.driver.session() as session:
+            session.execute_write(lambda tx: tx.run(query, data=json.dumps(summaries)))
+
+    def get_semantic_summaries(self):
+        query = """
+        MATCH (s:SemanticSummary {id:"latest"})
+        RETURN s.data AS data
+        """
+        with self.driver.session() as session:
+            def _fn(tx):
+                r = tx.run(query)
+                row = r.single()
+                if row:
+                    data = row.get("data")
+                    try:
+                        return json.loads(data)
+                    except Exception:
+                        return data
+                return None
+
+            return session.execute_read(_fn)

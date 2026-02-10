@@ -1,4 +1,5 @@
 import r2pipe
+from core.capabilities import Capability
 from storage.graph_store import GraphStore
 from bus.event_bus import EventBus
 
@@ -12,6 +13,7 @@ class StaticAgent:
     - CFG flow edges
     Populates the graph DB.
     """
+    CAPABILITIES = {Capability.STATIC_READ, Capability.STATIC_WRITE}
 
     def __init__(self, graph_store: GraphStore, bus: EventBus):
         self.g = graph_store

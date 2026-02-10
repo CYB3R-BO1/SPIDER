@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from typing import Dict, List, Optional
 
@@ -12,7 +13,9 @@ class SQLiteStore:
     - Track agent runs, errors, and cached results.
     """
 
-    def __init__(self, db_path: str = "storage/metadata.db"):
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            db_path = os.getenv("SQLITE_DB", "storage/metadata.db")
         self.db_path = db_path
         self._init_db()
 

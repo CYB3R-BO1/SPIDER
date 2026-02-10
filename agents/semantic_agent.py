@@ -1,6 +1,7 @@
 import re
 from typing import Dict, List, Optional, Set, Tuple
 
+from core.capabilities import Capability
 from storage.graph_store import GraphStore
 from bus.event_bus import EventBus
 
@@ -15,10 +16,89 @@ class SemanticAgent:
     - Identify potential vulnerabilities.
     - Output summaries that humans can understand.
     """
+    CAPABILITIES = {Capability.SEMANTIC_REASON, Capability.STATIC_READ}
 
     def __init__(self, graph_store: GraphStore, bus: Optional[EventBus] = None):
         self.g = graph_store
         self.bus = bus
+
+    def explain_simple(self, func_addr: int) -> Dict:
+        func_name = self._lookup_function_name(func_addr)
+        blocks = self.g.fetch_basic_blocks(func_addr)
+        edges = self.g.fetch_flow_edges(func_addr)
+        block_insns = {bb: self.g.fetch_block_instructions(bb) for bb in blocks}
+        calls = self._collect_calls(block_insns)
+        loops = self._detect_back_edges(blocks, edges)
+        summary = (
+            f"{func_name} performs {len(calls)} call(s) and has "
+            f"{len(loops)} loop(s) across {len(blocks)} blocks."
+        )
+        return {
+            "summary": summary,
+            "steps": [],
+            "variables": [],
+            "vulnerabilities": [],
+        }
+
+    def explain_medium(self, func_addr: int) -> Dict:
+        return self.explain_function(func_addr)
+
+    def explain_deep(self, func_addr: int) -> Dict:
+        func_name = self._lookup_function_name(func_addr)
+        blocks = self.g.fetch_basic_blocks(func_addr)
+        edges = self.g.fetch_flow_edges(func_addr)
+
+        block_insns = {
+            bb: self.g.fetch_block_instructions(bb) for bb in blocks
+        }
+
+        calls = self._collect_calls(block_insns)
+        loops = self._detect_back_edges(blocks, edges)
+        variables = self._extract_variables(block_insns)
+        vulnerabilities = self._detect_vulnerabilities(block_insns, calls)
+
+        steps = []
+        if blocks:
+            steps.append(
+                f"Builds CFG with {len(blocks)} basic blocks and {len(edges)} edges."
+            )
+        if loops:
+            steps.append(
+                f"Contains {len(loops)} loop(s) based on back-edges to earlier blocks."
+            )
+        if calls:
+            steps.append(f"Calls {len(calls)} target(s): {', '.join(calls)}.")
+        if self._has_branching(block_insns):
+            steps.append("Performs conditional branching based on comparisons or tests.")
+        if self._has_memory_ops(block_insns):
+            steps.append("Moves or manipulates memory through load/store-like instructions.")
+        if variables:
+            steps.append(f"Observes {len(variables)} variables from registers/stack/immediates.")
+        if vulnerabilities:
+            steps.append(f"Flags {len(vulnerabilities)} potential vulnerability indicator(s).")
+
+        summary = self._build_summary(
+            func_name=func_name,
+            func_addr=func_addr,
+            blocks=len(blocks),
+            edges=len(edges),
+            loops=len(loops),
+            calls=calls,
+        )
+
+        return {
+            "summary": summary,
+            "steps": steps,
+            "variables": variables,
+            "vulnerabilities": vulnerabilities,
+        }
+
+    def explain(self, func_addr: int, level: str = "medium") -> Dict:
+        if level == "simple":
+            return self.explain_simple(func_addr)
+        if level == "deep":
+            return self.explain_deep(func_addr)
+        return self.explain_medium(func_addr)
 
     def explain_function(self, func_addr: int) -> Dict:
         func_name = self._lookup_function_name(func_addr)
