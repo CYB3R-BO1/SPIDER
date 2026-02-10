@@ -1,0 +1,10 @@
+neo4j
+py2neo
+r2pipe
+z3-solver
+redis
+pygments
+networkx
+fastapi
+uvicorn
+pygdbmi
