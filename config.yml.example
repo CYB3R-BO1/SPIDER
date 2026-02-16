@@ -1,0 +1,22 @@
+# Copy this file to `config.yml` and fill in secrets locally.
+# This example contains placeholder values only and is safe to commit.
+
+neo4j:
+  uri: bolt://127.0.0.1:7687
+  user: NE04J_USER
+  password: YOUR_NEO4J_PASSWORD
+  database: neo4j
+
+redis:
+  host: localhost
+  port: 6379
+
+sqlite:
+  db_path: storage/metadata.db
+
+tools:
+  r2_path: ""
+  gdb_path: ""
+
+pipeline:
+  event_timeout_seconds: 10.0
