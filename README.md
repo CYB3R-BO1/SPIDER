@@ -1,39 +1,94 @@
-# SPIDER
+# SPIDER - Multi-Agent Reverse Engineering Pipeline
 
-SPIDER is a multi-agent reverse engineering pipeline that combines static analysis, dynamic tracing, constraint solving, and graph-based reasoning.
+**SPIDER** is a research-grade, multi-agent system for automated binary reverse engineering. It ingests executables, performs layered static and dynamic analysis, applies heuristics, and generates human-readable explanations of code.
 
-**What It Does**
-1. Ingests binaries via `radare2` and builds a control-flow graph (CFG) in Neo4j.
-2. Applies heuristics for loops, crypto patterns, stack frames, and function classification.
-3. Traces runtime execution with GDB MI to validate static CFG edges.
-4. Runs constraint and verification passes to prune infeasible edges and flag suspect control flow.
-5. Produces human-readable explanations of functions.
+---
 
-**Project Structure**
-- `agents/`: Analysis agents (static, dynamic, heuristics, verifier, semantic, z3).
-- `analysis/`: Constraint passes and post-processing.
-- `storage/`: Graph store (Neo4j) and snapshot metadata (SQLite).
-- `orchestrator/`: Event-driven pipeline control.
-- `tests/`: Test scaffolding (if present).
+## Features
 
-**Requirements**
-- Python 3.10+
-- Neo4j (graph storage)
-- Redis (event bus)
-- radare2 (static analysis)
-- GDB with MI support (dynamic tracing)
+- **Multi-agent pipeline** - static analysis, dynamic tracing, heuristics, verification, semantic explanation
+- **Plugin system** - extensible analysis via dynamically loaded plugins (anti-debug, crypto, entropy, magic patterns, string decoding)
+- **Graph-backed storage** - Neo4j for production, in-memory fallback for quick use
+- **Constraint solving** - Z3-powered branch feasibility checking and infeasible edge pruning
+- **C pseudocode generation** - reconstruct readable C-like code from disassembly
+- **Cyclomatic complexity** - per-function CFG complexity metrics
+- **JSON export** - full analysis export for interoperability and reporting
+- **Snapshot system** - save, load, list, and diff analysis states
+- **Cross-platform** - Linux and Windows (dynamic tracing Linux-only)
+- **Docker support** - one-command deployment with Neo4j and Redis
 
-Install Python dependencies:
+---
+
+## Quick Start
+
 ```bash
-python -m pip install -r requirements.txt
+# 1. Set up
+python -m venv .venv
+source .venv/bin/activate    # Linux
+# .venv\Scripts\activate     # Windows
+pip install -r requirements.txt
+
+# 2. Run
+python main.py                        # Interactive CLI
+python main.py path/to/binary         # Direct analysis
+
+# 3. Docker (full stack)
+cd docker && docker compose up -d
 ```
 
-**Quick Start**
-1. Start Neo4j and Redis.
-2. Run static analysis with `StaticAgent` to populate the graph.
-3. Run `HeuristicsAgent`, `Z3` constraint pass, and `VerifierAgent` as needed.
-4. Use `SemanticAgent.explain_function()` for summaries.
+See [SETUP.md](SETUP.md) for detailed installation instructions.
 
-**Notes**
-- Dynamic tracing requires a debuggable binary and GDB MI support.
-- Snapshotting stores metadata and file references in SQLite (see `storage/snapshots.py`).
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `load <binary>` | Analyze a binary |
+| `list funcs` | List discovered functions |
+| `info <addr>` | Function details |
+| `blocks / insns / edges` | CFG exploration |
+| `explain [level] <addr>` | Semantic summary (simple/medium/deep) |
+| `pseudocode <addr>` | C-like pseudocode |
+| `complexity [addr]` | Cyclomatic complexity metrics |
+| `verify` | Run verifier (branch feasibility, unsafe patterns) |
+| `export <path>` | Export analysis to JSON |
+| `plugins list / run` | Manage analysis plugins |
+| `snapshot save/list/show/diff` | Manage analysis snapshots |
+| `status` | Check tool availability |
+
+---
+
+## Project Structure
+
+```
+├── main.py                  # Entry point
+├── config.yml               # Default configuration
+├── core/                    # Config, capabilities, events, IR
+├── agents/                  # Analysis agents
+├── orchestrator/            # Pipeline controller
+├── storage/                 # Neo4j, in-memory, SQLite, snapshots
+├── bus/                     # Event bus (Redis + local)
+├── plugins/                 # Analysis plugins
+├── analysis/                # Complexity, export, constraint passes
+├── ui/                      # Interactive CLI
+├── docker/                  # Docker deployment
+└── tests/                   # Test binaries
+```
+
+---
+
+## Documentation
+
+- **[SETUP.md](SETUP.md)** - Installation guide (Linux + Windows)
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design and data flow
+- **[PLUGINS.md](PLUGINS.md)** - Plugin development guide
+
+---
+
+## Requirements
+
+- Python 3.10+
+- Optional: radare2, GDB (Linux), Neo4j, Redis, z3-solver
+
+All optional dependencies have graceful fallbacks.

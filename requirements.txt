@@ -1,10 +1,24 @@
+# Core (always required)
+PyYAML
+networkx
+pygments
+
+# Graph storage (optional - falls back to in-memory)
 neo4j
 py2neo
-r2pipe
-z3-solver
+
+# Event bus (optional - falls back to local in-memory bus)
 redis
-pygments
-networkx
+
+# Static analysis (optional - requires radare2 installed)
+r2pipe
+
+# Constraint solving (optional - graceful fallback)
+z3-solver
+
+# Dynamic tracing (optional - requires GDB installed)
+pygdbmi
+
+# Web API (optional - only needed for web frontend)
 fastapi
 uvicorn
-pygdbmi

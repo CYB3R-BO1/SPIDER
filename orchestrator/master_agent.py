@@ -1,12 +1,12 @@
-import os
 import threading
 import time
 from datetime import datetime, timezone
 
 from bus.event_bus import EventBus
 from core import load_env
+from core.config import get_config
 from core.capabilities import Capability, enforce_capability
-from storage.graph_store import GraphStore
+from storage.graph_store import create_graph_store
 from storage.sqlite_store import SQLiteStore
 from storage.snapshots import SnapshotManager
 from plugins import PluginManager
@@ -25,18 +25,25 @@ class MasterAgent:
 
     def __init__(self):
         load_env()
+        config = get_config()
         self.bus = EventBus()
         self.state = {}
         self._state_lock = threading.Lock()
         self._done_event = threading.Event()
-
-        self.graph_store = GraphStore(
-            os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-            os.getenv("NEO4J_USER", "neo4j"),
-            os.getenv("NEO4J_PASSWORD", "neo4j"),
-            os.getenv("NEO4J_DATABASE", "ai-reverse-db"),
+        self.event_timeout_seconds = float(
+            config.get("pipeline", {}).get("event_timeout_seconds", 10.0)
         )
-        self.sqlite_store = SQLiteStore(db_path=os.getenv("SQLITE_DB", "storage/metadata.db"))
+
+        neo4j_cfg = config.get("neo4j", {})
+        self.graph_store = create_graph_store(
+            neo4j_cfg.get("uri", "bolt://localhost:7687"),
+            neo4j_cfg.get("user", "neo4j"),
+            neo4j_cfg.get("password", "neo4j"),
+            neo4j_cfg.get("database", "neo4j"),
+        )
+        self.sqlite_store = SQLiteStore(
+            db_path=config.get("sqlite", {}).get("db_path", "storage/metadata.db")
+        )
         self.snapshots = SnapshotManager(self.sqlite_store, graph_store=self.graph_store)
         self.plugins = PluginManager()
 
@@ -147,6 +154,11 @@ class MasterAgent:
         if enforce_capability(self.static_agent, Capability.STATIC_WRITE):
             self.static_agent.run(binary_path)
 
+        # With LocalEventBus, handlers fire synchronously inside
+        # static_agent.run(), so the pipeline may already be done.
+        if self._done_event.is_set():
+            return
+
         print("[Master] Waiting for pipeline completion...")
         while not self._done_event.is_set():
             with self._state_lock:
@@ -154,8 +166,10 @@ class MasterAgent:
                 active = self.state.get("active", False)
             if not active:
                 break
-            if time.monotonic() - last_event > 10.0:
-                print("[Master] Pipeline timeout (no events in 10s).")
+            if time.monotonic() - last_event > self.event_timeout_seconds:
+                print(
+                    f"[Master] Pipeline timeout (no events in {self.event_timeout_seconds}s)."
+                )
                 with self._state_lock:
                     self.state["active"] = False
                 break

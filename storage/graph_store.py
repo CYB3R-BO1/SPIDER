@@ -1,6 +1,23 @@
 import json
-from neo4j import GraphDatabase
-from typing import List, Dict
+from typing import List, Dict, Optional
+
+
+def create_graph_store(uri: str, user: str, password: str, database: str = "neo4j"):
+    """
+    Factory: returns a Neo4j-backed GraphStore when available,
+    otherwise falls back to a pure in-memory store.
+    """
+    try:
+        from neo4j import GraphDatabase as _GD
+        driver = _GD.driver(uri, auth=(user, password), connection_timeout=3)
+        driver.verify_connectivity()
+        print("[GraphStore] Connected to Neo4j.")
+        driver.close()
+        return GraphStore(uri, user, password, database)
+    except Exception:
+        from storage.memory_graph_store import MemoryGraphStore
+        print("[GraphStore] Neo4j unavailable - using in-memory graph store.")
+        return MemoryGraphStore()
 
 
 class GraphStore:
@@ -10,7 +27,8 @@ class GraphStore:
     Manages FLOW, CALL, CONTAINS, and IN relationships.
     """
 
-    def __init__(self, uri, user, password, database="ai-reverse-db"):
+    def __init__(self, uri, user, password, database="neo4j"):
+        from neo4j import GraphDatabase
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.database = database
 
@@ -212,12 +230,12 @@ class GraphStore:
     def set_plugin_facts(self, func_addr: int, facts: Dict):
         query = """
         MATCH (f:Function {addr:$func_addr})
-        SET f.plugin_facts = coalesce(f.plugin_facts, {}) + $facts
+        SET f.plugin_facts = $facts_json
         RETURN f
         """
         with self.driver.session() as session:
             session.execute_write(
-                lambda tx: tx.run(query, func_addr=func_addr, facts=facts)
+                lambda tx: tx.run(query, func_addr=func_addr, facts_json=json.dumps(facts))
             )
 
     def set_switch_info(self, func_addr: int, header_bb: int, cases: List[int]):
@@ -298,7 +316,7 @@ class GraphStore:
             seq:$seq,
             pc:$pc,
             next_pc:$next_pc,
-            regs:$regs
+            regs:$regs_json
         }]->(b)
         """
         with self.driver.session() as session:
@@ -310,7 +328,7 @@ class GraphStore:
                     seq=seq,
                     pc=pc,
                     next_pc=next_pc,
-                    regs=regs,
+                    regs_json=json.dumps(regs),
                 )
             )
 
@@ -333,7 +351,7 @@ class GraphStore:
             seq:$seq,
             pc:$pc,
             next_pc:$next_pc,
-            regs:$regs
+            regs:$regs_json
         }]->(b)
         """
         with self.driver.session() as session:
@@ -346,7 +364,7 @@ class GraphStore:
                     seq=seq,
                     pc=pc,
                     next_pc=next_pc,
-                    regs=regs,
+                    regs_json=json.dumps(regs),
                 )
             )
 
@@ -358,6 +376,8 @@ class GraphStore:
         syscall_number: int,
         args: List,
     ):
+        # Filter out None values and coerce to int for Neo4j compatibility
+        safe_args = [a if isinstance(a, int) else 0 for a in args if a is not None]
         query = """
         MATCH (r:Run {id:$run_id})
         CREATE (r)-[:SYSCALL_EVENT {
@@ -375,7 +395,7 @@ class GraphStore:
                     seq=seq,
                     pc=pc,
                     syscall_number=syscall_number,
-                    args=args,
+                    args=safe_args,
                 )
             )
 

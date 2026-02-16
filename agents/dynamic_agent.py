@@ -1,8 +1,18 @@
+import os
+import platform
+import shutil
 from typing import Dict, List, Optional, Tuple
 
 from core.capabilities import Capability
+from core.config import get_config
 from storage.graph_store import GraphStore
 from bus.event_bus import EventBus
+
+try:
+    from pygdbmi.gdbcontroller import GdbController
+    _PYGDBMI_AVAILABLE = True
+except ImportError:
+    _PYGDBMI_AVAILABLE = False
 
 
 class DynamicAgent:
@@ -22,12 +32,31 @@ class DynamicAgent:
         self.bus = bus
 
     def run(self, binary_path: str, run_id: str = "run_1"):
-        try:
-            from pygdbmi.gdbcontroller import GdbController
-        except Exception as exc:
-            raise RuntimeError(
-                "pygdbmi is required for DynamicAgent. Install it to proceed."
-            ) from exc
+        if not _PYGDBMI_AVAILABLE:
+            print("[DynamicAgent] pygdbmi is not installed. Install it for dynamic tracing.")
+            print("[DynamicAgent] Skipping dynamic trace.")
+            if self.bus is not None:
+                self.bus.publish("DYNAMIC_TRACE_READY", {"run_id": run_id, "binary": binary_path})
+            return
+
+        if not os.path.isfile(binary_path):
+            print(f"[DynamicAgent] Binary not found: {binary_path}")
+            if self.bus is not None:
+                self.bus.publish("DYNAMIC_TRACE_READY", {"run_id": run_id, "binary": binary_path})
+            return
+
+        gdb_path = get_config().get("tools", {}).get("gdb_path") or "gdb"
+        if not shutil.which(gdb_path):
+            print(f"[DynamicAgent] GDB not found at '{gdb_path}'. Skipping dynamic trace.")
+            if self.bus is not None:
+                self.bus.publish("DYNAMIC_TRACE_READY", {"run_id": run_id, "binary": binary_path})
+            return
+
+        if platform.system() == "Windows":
+            print("[DynamicAgent] GDB-based tracing is not supported natively on Windows. Skipping.")
+            if self.bus is not None:
+                self.bus.publish("DYNAMIC_TRACE_READY", {"run_id": run_id, "binary": binary_path})
+            return
 
         bb_addrs = self.g.fetch_all_basic_blocks()
         if not bb_addrs:
@@ -38,7 +67,7 @@ class DynamicAgent:
         gdbmi = None
         try:
             gdbmi = GdbController(
-                command=["gdb", "--interpreter=mi2", binary_path]
+                command=[gdb_path, "--interpreter=mi2", binary_path]
             )
             self._send_cmd(gdbmi, "-gdb-set pagination off")
             self._send_cmd(gdbmi, "-gdb-set confirm off")
@@ -142,7 +171,7 @@ class DynamicAgent:
             if not responses:
                 return None
             for resp in responses:
-                if resp.get("type") == "result" and resp.get("message") == "stopped":
+                if resp.get("type") == "notify" and resp.get("message") == "stopped":
                     payload = resp.get("payload", {})
                     if isinstance(payload, dict):
                         return payload

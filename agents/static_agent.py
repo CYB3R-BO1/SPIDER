@@ -1,69 +1,148 @@
-import r2pipe
+"""
+Static analysis agent - uses radare2 to disassemble and analyse binaries.
+"""
+import os
+from typing import Optional
+
 from core.capabilities import Capability
+from core.config import get_config
 from storage.graph_store import GraphStore
 from bus.event_bus import EventBus
 
+try:
+    import r2pipe
+    _R2_AVAILABLE = True
+except ImportError:
+    _R2_AVAILABLE = False
+
+
 class StaticAgent:
     """
-    Performs initial static analysis using radare2.
-    Extracts:
-    - Functions
-    - Basic blocks
-    - Instructions
-    - CFG flow edges
-    Populates the graph DB.
+    Disassembles a binary and builds the program graph.
+    Uses radare2 via r2pipe for static analysis.
+    Populates Function, BasicBlock, Instruction nodes and FLOW edges.
     """
-    CAPABILITIES = {Capability.STATIC_READ, Capability.STATIC_WRITE}
+    CAPABILITIES = {Capability.STATIC_WRITE}
 
-    def __init__(self, graph_store: GraphStore, bus: EventBus):
+    def __init__(self, graph_store: GraphStore, bus: Optional[EventBus] = None):
         self.g = graph_store
-        self.bus = bus
+        self.bus = bus if bus is not None else type("NullBus", (), {"publish": lambda *a, **k: None})()
 
     def run(self, binary_path: str):
+        if not _R2_AVAILABLE:
+            print("[StaticAgent] r2pipe is not installed. Install radare2 and r2pipe to enable static analysis.")
+            print("[StaticAgent] Skipping static analysis.")
+            self.bus.publish("STATIC_ANALYSIS_COMPLETE", {"function_count": 0})
+            return
+
+        if not os.path.isfile(binary_path):
+            print(f"[StaticAgent] Binary not found: {binary_path}")
+            self.bus.publish("STATIC_ANALYSIS_COMPLETE", {"function_count": 0})
+            return
+
         def safe_cmdj(r2, command: str):
             try:
                 return r2.cmdj(command)
-            except Exception:
+            except Exception as e:
+                print(f"[StaticAgent] Warning: command '{command}' failed: {e}")
                 return None
 
+        def safe_cmd(r2, command: str):
+            try:
+                return r2.cmd(command)
+            except Exception as e:
+                print(f"[StaticAgent] Warning: command '{command}' failed: {e}")
+                return ""
+
         def parse_int(value, default=None):
+            if value is None:
+                return default
             try:
                 return int(value)
-            except Exception:
+            except (ValueError, TypeError):
                 return default
 
-        def extract_blocks(agfbj_data):
-            if isinstance(agfbj_data, dict):
-                if isinstance(agfbj_data.get("blocks"), list):
-                    return agfbj_data["blocks"]
+        def extract_blocks(data):
+            """Extract basic block list from agfbj/afbj output."""
+            if data is None:
                 return []
-            if isinstance(agfbj_data, list):
-                return agfbj_data
+            # Some r2 versions return: [{"blocks": [...]}]
+            if isinstance(data, list):
+                if len(data) == 1 and isinstance(data[0], dict) and "blocks" in data[0]:
+                    return data[0]["blocks"]
+                # Could already be a list of block dicts
+                if data and isinstance(data[0], dict) and "addr" in data[0]:
+                    return data
+                return data
+            # Some r2 versions return: {"blocks": [...]}
+            if isinstance(data, dict):
+                if isinstance(data.get("blocks"), list):
+                    return data["blocks"]
+                return []
             return []
+
+        def get_func_addr(func_dict):
+            """Get function address - try multiple key names for compatibility."""
+            for key in ("offset", "addr", "vaddr"):
+                val = parse_int(func_dict.get(key))
+                if val is not None:
+                    return val
+            return None
+
+        def get_func_name(func_dict, addr):
+            """Get function name with fallback."""
+            name = func_dict.get("name") or func_dict.get("realname")
+            if name:
+                return name
+            if addr is not None:
+                return f"sub_{addr:x}"
+            return None
 
         r2 = None
         function_count = 0
+        block_count = 0
+        insn_count = 0
+        edge_count = 0
+
         try:
             r2 = r2pipe.open(binary_path)
-            r2.cmd("aaa")
 
+            # Set config before analysis
+            safe_cmd(r2, "e bin.relocs.apply=true")
+            safe_cmd(r2, "e bin.cache=true")
+
+            # Full analysis
+            safe_cmd(r2, "aaa")
+
+            # Get function list
             functions = safe_cmdj(r2, "aflj")
             if not isinstance(functions, list):
+                # Try alternative command
+                functions = safe_cmdj(r2, "afj")
+            if not isinstance(functions, list):
+                print("[StaticAgent] Warning: no function list returned from radare2.")
                 functions = []
+
+            print(f"[StaticAgent] radare2 reported {len(functions)} function(s).")
 
             for func in functions:
                 if not isinstance(func, dict):
                     continue
 
-                func_addr = parse_int(func.get("offset"))
-                func_name = func.get("name") or f"sub_{func_addr:x}" if func_addr is not None else None
+                func_addr = get_func_addr(func)
+                func_name = get_func_name(func, func_addr)
+
                 if func_addr is None or func_name is None:
                     continue
 
                 self.g.create_function(func_name, func_addr)
                 function_count += 1
 
-                agfbj = safe_cmdj(r2, f"agfbj {func_addr}")
+                # Get basic blocks for this function
+                # Try multiple commands for compatibility across r2 versions
+                agfbj = safe_cmdj(r2, f"afbj @{func_addr}")
+                if agfbj is None:
+                    agfbj = safe_cmdj(r2, f"agfbj {func_addr}")
                 blocks = extract_blocks(agfbj)
 
                 block_addrs = []
@@ -75,8 +154,10 @@ class StaticAgent:
                         continue
                     block_addrs.append(bb_addr)
                     self.g.create_basic_block(func_addr, bb_addr)
+                    block_count += 1
 
                 # Add flow edges
+                block_set = set(block_addrs)
                 for block in blocks:
                     if not isinstance(block, dict):
                         continue
@@ -85,6 +166,7 @@ class StaticAgent:
                         continue
 
                     dsts = []
+                    # Some r2 versions use "edges" list
                     if isinstance(block.get("edges"), list):
                         for edge in block["edges"]:
                             if isinstance(edge, dict):
@@ -92,13 +174,14 @@ class StaticAgent:
                             else:
                                 dsts.append(parse_int(edge))
                     else:
+                        # Others use jump/fail fields
                         dsts.append(parse_int(block.get("jump")))
                         dsts.append(parse_int(block.get("fail")))
 
                     for dst in dsts:
-                        if dst is None or dst not in block_addrs:
-                            continue
-                        self.g.add_flow_edge(src_addr, dst)
+                        if dst is not None and dst in block_set:
+                            self.g.add_flow_edge(src_addr, dst)
+                            edge_count += 1
 
                 # Instructions per block
                 for block in blocks:
@@ -109,7 +192,11 @@ class StaticAgent:
                     if bb_addr is None or bb_size is None or bb_size <= 0:
                         continue
 
-                    insns = safe_cmdj(r2, f"pdj {bb_size} @ {bb_addr}")
+                    # Get instructions for this block
+                    insns = safe_cmdj(r2, f"pDj {bb_size} @ {bb_addr}")
+                    if not isinstance(insns, list):
+                        # Fallback to pdj (instruction-count based)
+                        insns = safe_cmdj(r2, f"pdj 64 @ {bb_addr}")
                     if not isinstance(insns, list):
                         continue
 
@@ -117,20 +204,32 @@ class StaticAgent:
                         if not isinstance(insn, dict):
                             continue
                         insn_addr = parse_int(insn.get("offset"))
+                        if insn_addr is None:
+                            insn_addr = parse_int(insn.get("addr"))
+                        # Only include instructions within this block
+                        if insn_addr is None:
+                            continue
+                        if insn_addr < bb_addr or insn_addr >= bb_addr + bb_size:
+                            continue
+
                         mnemonic = insn.get("mnemonic")
                         if not mnemonic:
-                            opcode = insn.get("opcode")
+                            opcode = insn.get("opcode") or insn.get("disasm") or ""
                             if isinstance(opcode, str) and opcode.strip():
                                 mnemonic = opcode.strip().split()[0]
+                        if not mnemonic:
+                            continue
+
                         operands = []
-                        op_str = insn.get("op_str")
+                        op_str = insn.get("op_str") or insn.get("esil")
                         if isinstance(op_str, str) and op_str.strip():
                             operands = [o.strip() for o in op_str.split(",") if o.strip()]
 
-                        if insn_addr is None or not mnemonic:
-                            continue
                         self.g.create_instruction(bb_addr, insn_addr, mnemonic, operands)
+                        insn_count += 1
 
+        except Exception as e:
+            print(f"[StaticAgent] Error during analysis: {e}")
         finally:
             if r2 is not None:
                 try:
@@ -138,4 +237,6 @@ class StaticAgent:
                 except Exception:
                     pass
 
+        print(f"[StaticAgent] Created {function_count} functions, "
+              f"{block_count} blocks, {edge_count} edges, {insn_count} instructions.")
         self.bus.publish("STATIC_ANALYSIS_COMPLETE", {"function_count": function_count})

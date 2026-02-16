@@ -3,6 +3,8 @@ import os
 import sqlite3
 from typing import Dict, List, Optional
 
+from core.config import get_config
+
 
 class SQLiteStore:
     """
@@ -15,7 +17,13 @@ class SQLiteStore:
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
-            db_path = os.getenv("SQLITE_DB", "storage/metadata.db")
+            db_path = get_config().get("sqlite", {}).get("db_path", "storage/metadata.db")
+        # Resolve relative paths against the project root
+        if not os.path.isabs(db_path):
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            db_path = os.path.join(project_root, db_path)
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.db_path = db_path
         self._init_db()
 
